@@ -13,6 +13,7 @@ from tools.appium_driver_tool import register_appium_driver_tools
 from tools.ios_driver_tool import register_ios_driver_tools
 from tools.android_driver_tool import register_android_driver_tools
 from tools.mac_driver_tool import register_mac_driver_tools
+from tools.harmonyos_driver_tool import register_harmonyos_driver_tools
 from tools.gen_code_tool import register_gen_code_tools
 from tools.verify_tools import register_verify_tools
 from tools.config_tool import register_config_tools
@@ -50,7 +51,7 @@ def on_config_change(new_config):
 def main():
     global driver_manager, config_manager
     parser = argparse.ArgumentParser()
-    parser.add_argument("--platform", choices=["ios", "android", "mac"], default="ios")
+    parser.add_argument("--platform", choices=["ios", "android", "mac", "harmonyos"], default="ios")
     parser.add_argument("--transport", choices=["stdio", "sse"], default="sse")
     parser.add_argument("--config", type=str, help="Path to config file")
     args = parser.parse_args()
@@ -81,6 +82,8 @@ def main():
         register_android_driver_tools(mcp, driver_manager)
     elif args.platform == "mac":
         register_mac_driver_tools(mcp, driver_manager)
+    elif args.platform == "harmonyos":
+        register_harmonyos_driver_tools(mcp, driver_manager)
     else:
         pass
 

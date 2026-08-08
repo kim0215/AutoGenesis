@@ -56,6 +56,15 @@
             "waitForQuiescence": false,
             "showServerLogs": true,
             "server_url": "http://127.0.0.1:4723"
+        },
+        "harmonyos": {
+            "platformName": "harmonyos",
+            "automationName": "harmonyos",
+            "appium:udid": "your_hdc_device_sn",
+            "server_url": "http://127.0.0.1:4723",
+            "bundleId": "com.example.yourapp",
+            "abilityId": "EntryAbility",
+            "appium:noReset": true
         }
     }
 }

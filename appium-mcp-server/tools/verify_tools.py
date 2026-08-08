@@ -19,7 +19,8 @@ from selenium.common.exceptions import TimeoutException
 from utils.logger import log_tool_call
 from utils.response_format import format_tool_response, init_tool_response
 from utils.gen_code import record_calls
-from tools.appium_driver_tool import get_appium_locator, simplify_page_source
+from tools.appium_driver_tool import simplify_page_source
+from tools.harmonyos_helpers import locator_for_session
 from utils.logger import get_mcp_logger
 
 
@@ -47,7 +48,7 @@ def register_verify_tools(mcp, driver_manager):
         resp = init_tool_response()
         try:
             driver = driver_manager._driver
-            locator = get_appium_locator(locator_strategy, locator_value)
+            locator = locator_for_session(driver_manager, locator_strategy, locator_value)
             time.sleep(2)  # Wait for the page to load
             # Use WebDriverWait to ensure the element is present and visible
             WebDriverWait(driver, 5).until(EC.presence_of_element_located(locator))
@@ -87,7 +88,7 @@ def register_verify_tools(mcp, driver_manager):
         resp = init_tool_response()
         try:
             driver = driver_manager._driver
-            locator = get_appium_locator(locator_strategy, locator_value)
+            locator = locator_for_session(driver_manager, locator_strategy, locator_value)
             time.sleep(2)  # Wait for the page to load
             # Use WebDriverWait to ensure the element is not present
             elements = driver.find_elements(*locator)
@@ -133,9 +134,10 @@ def register_verify_tools(mcp, driver_manager):
             scenario: required, scenario name
         """
         resp = init_tool_response()
+        actual_value = None
         try:
             driver = driver_manager._driver
-            locator = get_appium_locator(locator_strategy, locator_value)
+            locator = locator_for_session(driver_manager, locator_strategy, locator_value)
             WebDriverWait(driver, 5).until(EC.presence_of_element_located(locator))
             element = driver.find_element(*locator)
             actual_value = element.get_attribute(attribute_name)
@@ -165,7 +167,57 @@ def register_verify_tools(mcp, driver_manager):
             resp["error"] = repr(e)
             logger.error(f"Error verifying element attribute: {e}")
         page_source = driver.page_source
-        resp["data"] = {"page_source": simplify_page_source(page_source)}
+        resp["data"] = {
+            "page_source": simplify_page_source(page_source),
+            "actual_value": actual_value,
+        }
+
+        return json.dumps(format_tool_response(resp))
+
+    @mcp.tool()
+    @log_tool_call
+    @record_calls(driver_manager)
+    async def get_element_attribute(
+        caller: str,
+        locator_value: str,
+        locator_strategy: str = "",
+        attribute_name: str = "text",
+        step: str = "",
+        scenario: str = "",
+        step_raw: str = "",
+    ) -> str:
+        """Read an element attribute without asserting an expected value (for Oracle capture).
+
+        Args:
+            locator_value: required, element locator value
+            locator_strategy: required, strategy of the locator
+            attribute_name: attribute to read (default 'text')
+            step: step name
+            step_raw: raw original step text
+            scenario: scenario name
+        """
+        resp = init_tool_response()
+        actual_value = None
+        try:
+            driver = driver_manager._driver
+            locator = locator_for_session(driver_manager, locator_strategy, locator_value)
+            time.sleep(1)
+            WebDriverWait(driver, 5).until(EC.presence_of_element_located(locator))
+            element = driver.find_element(*locator)
+            actual_value = element.get_attribute(attribute_name)
+            resp["status"] = "success"
+        except TimeoutException:
+            resp["status"] = "error"
+            resp["error"] = f"Element {locator_value} not found"
+        except Exception as e:
+            resp["error"] = repr(e)
+            logger.error(f"Error getting element attribute: {e}")
+        page_source = driver.page_source
+        resp["data"] = {
+            "page_source": simplify_page_source(page_source),
+            "attribute_name": attribute_name,
+            "actual_value": actual_value,
+        }
 
         return json.dumps(format_tool_response(resp))
 
@@ -194,13 +246,13 @@ def register_verify_tools(mcp, driver_manager):
         resp = init_tool_response()
         try:
             driver = driver_manager._driver
-            locator = get_appium_locator(locator_strategy, locator_value)
+            locator = locator_for_session(driver_manager, locator_strategy, locator_value)
             WebDriverWait(driver, 5).until(EC.presence_of_element_located(locator))
             element = driver.find_element(*locator)
             x = element.location['x']
             y = element.location['y']
             if relative_locator_value and relative_locator_strategy:
-                relative_locator = get_appium_locator(relative_locator_strategy, relative_locator_value)
+                relative_locator = locator_for_session(driver_manager, relative_locator_strategy, relative_locator_value)
                 WebDriverWait(driver, 5).until(EC.presence_of_element_located(relative_locator))
                 relative_element = driver.find_element(*relative_locator)
                 relative_x = relative_element.location['x']

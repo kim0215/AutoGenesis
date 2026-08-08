@@ -23,7 +23,7 @@ logger = get_mcp_logger()
 
 
 def get_appium_locator(locator_strategy_str: str, locator_value: str):
-    """Convert string locator strategy to AppiumBy locator tuple"""
+    """Convert string locator strategy to AppiumBy / HarmonyOS locator tuple"""
     strategy_mapping = {
         "": AppiumBy.ACCESSIBILITY_ID,  # Default to ACCESSIBILITY_ID if empty
         "AppiumBy.ACCESSIBILITY_ID": AppiumBy.ACCESSIBILITY_ID,
@@ -54,11 +54,23 @@ def get_appium_locator(locator_strategy_str: str, locator_value: str):
         "ios_class_chain": AppiumBy.IOS_CLASS_CHAIN,
         "android_uiautomator": AppiumBy.ANDROID_UIAUTOMATOR,
         "android_viewtag": AppiumBy.ANDROID_VIEWTAG,
+        # HarmonyOS / Hypium strategies (appium-harmonyos-driver)
+        "text": "text",
+        "type": "type",
+        "key": "key",
+        "HypiumBy": "HypiumBy",
+        "hypiumby": "HypiumBy",
+        "HYPIUMBY": "HypiumBy",
     }
 
     locator_strategy_str = locator_strategy_str.strip() if locator_strategy_str else ""
 
-    appium_by = strategy_mapping.get(locator_strategy_str)
+    if locator_strategy_str in strategy_mapping:
+        appium_by = strategy_mapping[locator_strategy_str]
+    else:
+        # Preserve previous unknown-strategy behavior for Android/iOS, and allow
+        # raw HarmonyOS / Hypium strategy strings to pass through unchanged.
+        appium_by = locator_strategy_str or AppiumBy.ACCESSIBILITY_ID
 
     return (appium_by, locator_value)
 
@@ -154,7 +166,9 @@ def register_appium_driver_tools(mcp, driver_manager):
         resp = init_tool_response()
         try:
             driver = driver_manager._driver
-            locator = get_appium_locator(locator_strategy, locator_value)
+            from tools.harmonyos_helpers import locator_for_session
+
+            locator = locator_for_session(driver_manager, locator_strategy, locator_value)
             time.sleep(2)  # Wait for the page to load
             # Use WebDriverWait to ensure the element is present and visible
             WebDriverWait(driver, 5).until(EC.presence_of_element_located(locator))
@@ -213,21 +227,32 @@ def register_appium_driver_tools(mcp, driver_manager):
 
                 return await click_element_macos(caller, locator_value, locator_strategy, step, scenario, step_raw, driver_manager, page_source_file, summary_only)
 
-            locator = get_appium_locator(locator_strategy, locator_value)
+            from tools.harmonyos_helpers import click_element_harmonyos, is_harmonyos_session
 
-            try:
-                elements = WebDriverWait(driver, 5).until(EC.visibility_of_any_elements_located(locator))
-                if elements and len(elements) > 1:
-                    logger.warning(f"Multiple elements found for locator {locator_value}. Retrun error.")
-                    resp["status"] = "error"
-                    resp["error"] = f"Multiple elements found for locator {locator_value}. Please refine your locator."
-                else:
-                    WebDriverWait(driver, 5).until(EC.element_to_be_clickable(locator)).click()
+            if is_harmonyos_session(driver_manager, driver):
+                try:
+                    click_element_harmonyos(driver, locator_value, locator_strategy)
                     resp["status"] = "success"
-            except Exception as e:
-                logger.error(f"Error clicking element: {e}")
-                resp["status"] = "error"
-                resp["error"] = f"Element {locator_value} not found or not clickable"
+                except Exception as e:
+                    logger.error(f"Error clicking HarmonyOS element: {e}")
+                    resp["status"] = "error"
+                    resp["error"] = f"Element {locator_value} not found or not clickable"
+            else:
+                locator = get_appium_locator(locator_strategy, locator_value)
+
+                try:
+                    elements = WebDriverWait(driver, 5).until(EC.visibility_of_any_elements_located(locator))
+                    if elements and len(elements) > 1:
+                        logger.warning(f"Multiple elements found for locator {locator_value}. Retrun error.")
+                        resp["status"] = "error"
+                        resp["error"] = f"Multiple elements found for locator {locator_value}. Please refine your locator."
+                    else:
+                        WebDriverWait(driver, 5).until(EC.element_to_be_clickable(locator)).click()
+                        resp["status"] = "success"
+                except Exception as e:
+                    logger.error(f"Error clicking element: {e}")
+                    resp["status"] = "error"
+                    resp["error"] = f"Element {locator_value} not found or not clickable"
 
         except Exception as e:
             resp["error"] = repr(e)
@@ -272,13 +297,19 @@ def register_appium_driver_tools(mcp, driver_manager):
         resp = init_tool_response()
         try:
             driver = driver_manager._driver
-            locator = get_appium_locator(locator_strategy, locator_value)
-            element = WebDriverWait(driver, 5).until(EC.element_to_be_clickable(locator))
-            element.click()
-            # Clear existing text first
-            element.clear()
-            element.send_keys(text)
-            resp["status"] = "success"
+            from tools.harmonyos_helpers import is_harmonyos_session, send_keys_harmonyos
+
+            if is_harmonyos_session(driver_manager, driver):
+                send_keys_harmonyos(driver, locator_value, locator_strategy, text)
+                resp["status"] = "success"
+            else:
+                locator = get_appium_locator(locator_strategy, locator_value)
+                element = WebDriverWait(driver, 5).until(EC.element_to_be_clickable(locator))
+                element.click()
+                # Clear existing text first
+                element.clear()
+                element.send_keys(text)
+                resp["status"] = "success"
         except Exception as e:
             logger.error(f"Error entering text in element: {e}")
             resp["status"] = "error"
@@ -323,6 +354,8 @@ def register_appium_driver_tools(mcp, driver_manager):
         resp = init_tool_response()
         try:
             driver = driver_manager._driver
+            from tools.harmonyos_helpers import is_harmonyos_session, swipe_harmonyos
+
             size = driver.get_window_size()
             width = size["width"]
             height = size["height"]
@@ -348,7 +381,10 @@ def register_appium_driver_tools(mcp, driver_manager):
             if end_y > max_y:
                 end_y = int(max_y)
 
-            driver.swipe(start_x, start_y, end_x, end_y, duration)
+            if is_harmonyos_session(driver_manager, driver):
+                swipe_harmonyos(driver, start_x, start_y, end_x, end_y, duration)
+            else:
+                driver.swipe(start_x, start_y, end_x, end_y, duration)
             resp["status"] = "success"
         except Exception as e:
             resp["error"] = repr(e)
@@ -386,19 +422,24 @@ def register_appium_driver_tools(mcp, driver_manager):
         resp = init_tool_response()
         try:
             driver = driver_manager._driver
-            locator = get_appium_locator(locator_strategy, locator_value)
-            element = WebDriverWait(driver, 5).until(EC.element_to_be_clickable(locator))
+            from tools.harmonyos_helpers import double_click_element_harmonyos, is_harmonyos_session
 
-            # Get element location and size for double tap
-            location = element.location
-            size = element.size
-            x = location["x"] + size["width"] / 2
-            y = location["y"] + size["height"] / 2
+            if is_harmonyos_session(driver_manager, driver):
+                double_click_element_harmonyos(driver, locator_value, locator_strategy)
+            else:
+                locator = get_appium_locator(locator_strategy, locator_value)
+                element = WebDriverWait(driver, 5).until(EC.element_to_be_clickable(locator))
 
-            # Perform double tap using coordinates
-            driver.tap([(x, y)])
-            time.sleep(0.1)  # Small delay between taps
-            driver.tap([(x, y)])
+                # Get element location and size for double tap
+                location = element.location
+                size = element.size
+                x = location["x"] + size["width"] / 2
+                y = location["y"] + size["height"] / 2
+
+                # Perform double tap using coordinates
+                driver.tap([(x, y)])
+                time.sleep(0.1)  # Small delay between taps
+                driver.tap([(x, y)])
 
             resp["status"] = "success"
         except Exception as e:

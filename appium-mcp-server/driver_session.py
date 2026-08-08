@@ -13,9 +13,18 @@ from appium import webdriver
 from appium.options.ios import XCUITestOptions
 from appium.options.mac import Mac2Options  # Add this import for Mac automation
 from appium.options.android import UiAutomator2Options  # Add this for Android if needed
+from appium.options.common.base import AppiumOptions
 from utils.logger import get_mcp_logger
 
 logger = get_mcp_logger()
+
+# Keys used by AutoGenesis config / session helpers, not Appium capabilities
+_NON_CAPABILITY_KEYS = {
+    "server_url",
+    "abilityId",
+    "appium:abilityId",
+    "arguments",
+}
 
 
 class DriverSessionManager:
@@ -84,10 +93,9 @@ class DriverSessionManager:
 
         if self._driver and self._is_session_valid():
             logger.info("Driver session already exists and is valid, reusing it.")
-            package = self.app_package()
             logger.info("start activate app")
             try:
-                self._driver.activate_app(package)
+                self._activate_current_app()
                 return self._driver
             except Exception as e:
                 logger.warning(f"Failed to activate app on existing session: {e}. Creating new session.")
@@ -108,12 +116,15 @@ class DriverSessionManager:
             logger.info(f"Using driver config: {config_copy}")
 
             # Use appropriate options based on device type
+            session_caps = self._session_capabilities(config_copy)
             if self.device == "ios":
-                options = XCUITestOptions().load_capabilities(config_copy)
+                options = XCUITestOptions().load_capabilities(session_caps)
             elif self.device == "mac":
-                options = Mac2Options().load_capabilities(config_copy)
+                options = Mac2Options().load_capabilities(session_caps)
             elif self.device == "android":
-                options = UiAutomator2Options().load_capabilities(config_copy)
+                options = UiAutomator2Options().load_capabilities(session_caps)
+            elif self.device == "harmonyos":
+                options = AppiumOptions().load_capabilities(session_caps)
             else:
                 raise ValueError(f"Unsupported device type: {self.device}")
 
@@ -122,10 +133,10 @@ class DriverSessionManager:
 
             # Try to activate app, but don't fail if method is not implemented
             package = self.app_package()
-            if package and self.device in ["ios", "android"]:
+            if package and self.device in ["ios", "android", "harmonyos"]:
                 logger.info("Attempting to activate app")
                 try:
-                    self._driver.activate_app(package)
+                    self._activate_current_app()
                     logger.info("App activated successfully")
                 except Exception as e:
                     logger.warning(f"activate_app not supported or failed: {e}. Continuing without activation.")
@@ -139,13 +150,46 @@ class DriverSessionManager:
             self._driver = None  # Ensure driver is reset on failure
             raise
 
+    def _session_capabilities(self, config_copy: dict) -> dict:
+        """Strip AutoGenesis-only keys before creating an Appium session."""
+        caps = dict(config_copy)
+        for key in _NON_CAPABILITY_KEYS:
+            caps.pop(key, None)
+        return caps
+
+    def _ability_id(self) -> str:
+        return (
+            self.config.get("abilityId")
+            or self.config.get("appium:abilityId")
+            or "EntryAbility"
+        )
+
+    def _activate_current_app(self):
+        """Bring the configured app to the foreground for the active platform."""
+        package = self.app_package()
+        if not package:
+            raise ValueError("No app package/bundleId configured for activation")
+        if not self._driver:
+            raise ValueError("No active driver session")
+
+        if self.device == "harmonyos":
+            ability_id = self._ability_id()
+            logger.info(f"Activating HarmonyOS app bundleId={package}, abilityId={ability_id}")
+            self._driver.execute_script(
+                "mobile: activateApp",
+                {"bundleId": package, "abilityId": ability_id},
+            )
+            return
+
+        self._driver.activate_app(package)
+
     def app_package(self):
         """Get from config first (reliable), then from capabilities (fallback)"""
         # Priority 1: From config (100% reliable)
-        if self.device in ["ios", "mac"]:
-            package = self.config.get("bundleId")
+        if self.device in ["ios", "mac", "harmonyos"]:
+            package = self.config.get("bundleId") or self.config.get("appium:bundleId")
         elif self.device == "android":
-            package = self.config.get("appPackage")
+            package = self.config.get("appPackage") or self.config.get("appium:appPackage")
         else:
             package = None
 
@@ -165,8 +209,8 @@ class DriverSessionManager:
     def app_close(self):
         if self._driver and self._is_session_valid():
             package = self.app_package()
-            if package and self.device in ["ios", "android"]:
-                # For iOS and Android, terminate the app using bundle ID
+            if package and self.device in ["ios", "android", "harmonyos"]:
+                # For iOS, Android, and HarmonyOS, terminate the app using bundle ID
                 logging.info(f"Closing app with bundle ID: {package}")
                 self._driver.terminate_app(package)
         else:

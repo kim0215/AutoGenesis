@@ -18,9 +18,39 @@ from mcp.client.stdio import stdio_client, StdioServerParameters
 from behave.contrib.scenario_autoretry import patch_scenario_with_autoretry
 from applicationinsights import TelemetryClient
 
-# MCP server name - set to a specific server name from .vscode/mcp.json to use it.
-# Leave empty to auto-discover (prefers stdio over SSE, matching "auto-genesis" prefix).
-AUTO_GENESIS_MCP_SERVER = ''
+# MCP server name from .vscode/mcp.json.
+# Prefer env AUTO_GENESIS_MCP_SERVER (set by scripts/expectations_run.py).
+# Else derive from EXPECTATIONS_MODE + SOURCE_PLATFORM / TARGET_PLATFORM.
+# Leave empty string only when you want auto-discover of the first auto-genesis* stdio server.
+_MCP_BY_PLATFORM = {
+    "android": "auto-genesis-mcp-mobile",
+    "ios": "auto-genesis-mcp-ios",
+    "harmonyos": "auto-genesis-mcp-harmonyos",
+}
+
+
+def _resolve_mcp_server_name() -> str:
+    explicit = (os.environ.get("AUTO_GENESIS_MCP_SERVER") or "").strip()
+    if explicit:
+        return explicit
+    mode = (os.environ.get("EXPECTATIONS_MODE") or "").strip().lower()
+    if mode == "capture":
+        platform = (os.environ.get("SOURCE_PLATFORM") or "android").strip().lower()
+        return _MCP_BY_PLATFORM.get(platform, "")
+    if mode == "verify":
+        platform = (os.environ.get("TARGET_PLATFORM") or "harmonyos").strip().lower()
+        return _MCP_BY_PLATFORM.get(platform, "")
+    # Legacy default for ad-hoc behave without expectations_run
+    return "auto-genesis-mcp-harmonyos"
+
+
+AUTO_GENESIS_MCP_SERVER = _resolve_mcp_server_name()
+print(
+    f"[expectations] MCP server={AUTO_GENESIS_MCP_SERVER!r} "
+    f"EXPECTATIONS_MODE={os.environ.get('EXPECTATIONS_MODE')!r} "
+    f"SOURCE_PLATFORM={os.environ.get('SOURCE_PLATFORM')!r} "
+    f"TARGET_PLATFORM={os.environ.get('TARGET_PLATFORM')!r}"
+)
 
 session_ready = threading.Event()
 
@@ -333,10 +363,77 @@ def before_scenario(context, scenario):
         print(f"Skipping scenario '{scenario.name}' because it is marked as WIP.")
         scenario.skip("Scenario is marked as WIP")
         return
-    pass
+    # Fresh per-scenario verify report buffer (avoid hard/soft leaking across scenarios)
+    mode = (os.environ.get("EXPECTATIONS_MODE") or "").strip().lower()
+    if mode == "verify":
+        try:
+            from features import expectations_util as eu
+
+            platform = (
+                os.environ.get("TARGET_PLATFORM")
+                or os.environ.get("SOURCE_PLATFORM")
+                or "harmonyos"
+            ).strip() or "harmonyos"
+            eu.reset_verify_report(platform=platform, scenario=scenario.name)
+            context.__dict__["hard_results"] = []
+            context.__dict__["soft_drifts"] = []
+        except Exception as e:
+            print(f"[expectations] reset_verify_report skipped: {e}")
 
 def after_scenario(context, scenario):
     take_screenshot(context, scenario.name)
+    # Behave Context.__getattr__ raises KeyError for missing attrs — use __dict__.
+    # Always persist verify report in EXPECTATIONS_MODE=verify (or when steps opted in).
+    # Previously required _expectations_verify_started, which generated steps often omit.
+    mode = (os.environ.get("EXPECTATIONS_MODE") or "").strip().lower()
+    should_save = mode == "verify" or bool(
+        context.__dict__.get("_expectations_verify_started")
+    )
+    if should_save:
+        try:
+            from features import expectations_util as eu
+
+            # Ensure scenario name is set even if before_scenario reset was skipped
+            if not eu._verify_report.get("scenario"):
+                platform = (
+                    os.environ.get("TARGET_PLATFORM")
+                    or os.environ.get("SOURCE_PLATFORM")
+                    or "harmonyos"
+                ).strip() or "harmonyos"
+                eu.reset_verify_report(platform=platform, scenario=scenario.name)
+
+            # Merge per-scenario lists from steps that record on context only
+            for item in context.__dict__.get("hard_results") or []:
+                eu.add_hard_result(
+                    str(item.get("key") or "unknown"),
+                    status=str(item.get("status") or "failed"),
+                    detail=str(item.get("detail") or ""),
+                )
+            for item in context.__dict__.get("soft_drifts") or []:
+                eu.add_soft_drift(
+                    str(item.get("key") or "unknown"),
+                    expected=item.get("expected"),
+                    actual=item.get("actual"),
+                    note=str(item.get("note") or ""),
+                )
+            status = getattr(getattr(scenario, "status", None), "name", None) or str(
+                getattr(scenario, "status", "") or ""
+            )
+            eu.set_behave_status(status)
+            eu.save_verify_report()
+        except Exception as e:
+            print(f"[expectations] failed to save verify report: {e}")
+    # Safety net: restore sticky settings if scenario failed before the last reflect step.
+    if context.__dict__.get("_settings_restore"):
+        try:
+            from features.steps.load_platform_steps import resolve_steps_platform
+
+            if resolve_steps_platform() == "android":
+                from features.platform_steps.android import weather_steps as android_weather
+
+                android_weather.restore_pending_settings(context)
+        except Exception as e:  # noqa: BLE001
+            print(f"[android] after_scenario settings restore skipped: {e}")
 
 
 def before_feature(context, feature):
