@@ -16,6 +16,7 @@ from mcp.client.session import ClientSession
 from mcp.client.sse import sse_client
 from mcp.client.stdio import stdio_client, StdioServerParameters
 from behave.contrib.scenario_autoretry import patch_scenario_with_autoretry
+from behave.model import Scenario
 from applicationinsights import TelemetryClient
 
 # MCP server name from .vscode/mcp.json.
@@ -237,6 +238,14 @@ def clean_test_name(name):
 
 def before_all(context):
     import threading
+
+    # Continue remaining steps after a failed assertion (Behave default is False).
+    # Override: behave -D runner.continue_after_failed_step=false
+    continue_after_failed = context.config.userdata.getbool(
+        "runner.continue_after_failed_step", True
+    )
+    Scenario.continue_after_failed_step = continue_after_failed
+    print(f"[expectations] continue_after_failed_step={continue_after_failed}")
 
     # Print package information for debugging
     global package
