@@ -74,10 +74,6 @@ def expand_feature_args(values: list[str], *, base: Path) -> list[str]:
     return out
 
 
-def stems_from_feature_paths(paths: list[str]) -> str:
-    return ",".join(Path(p).stem for p in paths)
-
-
 def _run_behave(
     *,
     mode: str,
@@ -87,38 +83,56 @@ def _run_behave(
     name: str | None,
     extra: list[str],
 ) -> int:
-    env = os.environ.copy()
-    env["EXPECTATIONS_MODE"] = mode
-    if mode == "capture":
-        env["SOURCE_PLATFORM"] = source
-        env["AUTO_GENESIS_MCP_SERVER"] = MCP_BY_PLATFORM[source]
-        env.pop("TARGET_PLATFORM", None)
-    else:
-        env["TARGET_PLATFORM"] = target
-        env["AUTO_GENESIS_MCP_SERVER"] = MCP_BY_PLATFORM[target]
-        env.pop("SOURCE_PLATFORM", None)
-    if not (env.get("FEATURE_STEM") or "").strip():
-        env["FEATURE_STEM"] = stems_from_feature_paths(features)
+    """Run Features one behave process at a time on the same device.
 
-    cmd = [sys.executable, "-m", "behave", *features, "-f", "plain"]
-    if name:
-        cmd.extend(["--name", name])
-    cmd.extend(extra)
+    Each process loads only that file's ``*_steps.py`` (FEATURE_STEM=stem).
+    Loading every module into one process makes duplicate @given/@when text
+    raise AmbiguousStep and abort the rest of the later module.
+    """
+    rcs: list[int] = []
+    total = len(features)
+    for i, feature in enumerate(features, 1):
+        env = os.environ.copy()
+        env["EXPECTATIONS_MODE"] = mode
+        # Always this file's stem — ignore a comma-joined FEATURE_STEM from parent.
+        env["FEATURE_STEM"] = Path(feature).stem
+        if mode == "capture":
+            env["SOURCE_PLATFORM"] = source
+            env["AUTO_GENESIS_MCP_SERVER"] = MCP_BY_PLATFORM[source]
+            env.pop("TARGET_PLATFORM", None)
+        else:
+            env["TARGET_PLATFORM"] = target
+            env["AUTO_GENESIS_MCP_SERVER"] = MCP_BY_PLATFORM[target]
+            env.pop("SOURCE_PLATFORM", None)
 
-    print("=" * 60)
-    print(f"[expectations_run] mode={mode}")
-    print(f"[expectations_run] cwd={BEHAVE_DEMO}")
-    print(f"[expectations_run] MCP={env['AUTO_GENESIS_MCP_SERVER']}")
-    print(f"[expectations_run] FEATURE_STEM={env.get('FEATURE_STEM')}")
-    print(f"[expectations_run] features={features}")
-    if mode == "capture":
-        print(f"[expectations_run] SOURCE_PLATFORM={source}")
-    else:
-        print(f"[expectations_run] TARGET_PLATFORM={target}")
-    print(f"[expectations_run] cmd={' '.join(cmd)}")
-    print("=" * 60)
+        cmd = [sys.executable, "-m", "behave", feature, "-f", "plain"]
+        if name:
+            cmd.extend(["--name", name])
+        cmd.extend(extra)
 
-    return subprocess.call(cmd, cwd=str(BEHAVE_DEMO), env=env)
+        print("=" * 60)
+        print(f"[expectations_run] mode={mode}  feature {i}/{total}")
+        print(f"[expectations_run] cwd={BEHAVE_DEMO}")
+        print(f"[expectations_run] MCP={env['AUTO_GENESIS_MCP_SERVER']}")
+        print(f"[expectations_run] FEATURE_STEM={env.get('FEATURE_STEM')}")
+        print(f"[expectations_run] features={[feature]}")
+        if mode == "capture":
+            print(f"[expectations_run] SOURCE_PLATFORM={source}")
+        else:
+            print(f"[expectations_run] TARGET_PLATFORM={target}")
+        print(f"[expectations_run] cmd={' '.join(cmd)}")
+        print("=" * 60)
+
+        rc = subprocess.call(cmd, cwd=str(BEHAVE_DEMO), env=env)
+        rcs.append(rc)
+        if rc != 0:
+            print(
+                f"[expectations_run] {feature} finished with exit code {rc} "
+                f"({i}/{total}); continuing to next Feature"
+            )
+
+    failed = [rc for rc in rcs if rc != 0]
+    return failed[0] if failed else 0
 
 
 def main(argv: list[str] | None = None) -> int:
